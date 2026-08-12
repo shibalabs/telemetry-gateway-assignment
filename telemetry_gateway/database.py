@@ -20,8 +20,6 @@ from telemetry_gateway.models import (
 class TelemetryRepository(Protocol):
     def register_boot(self, event: BootRegistrationInput) -> BootRegistrationResult: ...
 
-    def preview_state(self, event: TelemetryInput, received_at: str) -> DeviceState: ...
-
     def ingest(self, event: TelemetryInput, received_at: str) -> IngestResult: ...
 
     def list_current_states(self) -> list[DeviceState]: ...
@@ -92,13 +90,6 @@ class TelemetryStore:
             generation=generation,
             created=True,
         )
-
-    def preview_state(self, event: TelemetryInput, received_at: str) -> DeviceState:
-        with self._lock:
-            boot = self._get_boot(event.deviceId, event.bootId)
-        if boot is None:
-            raise UnknownBootError()
-        return self._make_state(event, int(boot["generation"]), received_at)
 
     def ingest(self, event: TelemetryInput, received_at: str) -> IngestResult:
         with self._lock:
