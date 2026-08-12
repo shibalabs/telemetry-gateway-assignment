@@ -148,7 +148,15 @@ class TelemetryStore:
                         device_time = excluded.device_time,
                         received_at = excluded.received_at,
                         value = excluded.value
-                    WHERE excluded.device_time > current_state.device_time
+                    -- Recency is decided by the server-assigned boot
+                    -- generation, then by sequence within that boot. deviceTime
+                    -- is diagnostic only: device clocks can be early, late, or
+                    -- far in the future, so it must never move state backward.
+                    WHERE excluded.generation > current_state.generation
+                       OR (
+                            excluded.generation = current_state.generation
+                            AND excluded.sequence > current_state.sequence
+                          )
                     """,
                     (
                         event.deviceId,
