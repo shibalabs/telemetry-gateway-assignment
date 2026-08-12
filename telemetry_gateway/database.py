@@ -109,6 +109,9 @@ class TelemetryStore:
 
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                # The UNIQUE key on (device_id, boot_id, sequence) is the
+                # protocol's logical event identity, so OR IGNORE makes an
+                # at-least-once redelivery a no-op instead of a second audit row.
                 insert = self._connection.execute(
                     """
                     INSERT OR IGNORE INTO telemetry_events
