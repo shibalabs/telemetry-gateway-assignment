@@ -3,12 +3,37 @@ const grid = document.querySelector('#grid');
 const empty = document.querySelector('#empty');
 const status = document.querySelector('#connection-status');
 const errorBox = document.querySelector('#error');
+const INITIAL_RETRY_MS = 1000;
+const MAX_RETRY_MS = 15000;
 let stopped = false;
 let retryTimer;
+let retryDelay = INITIAL_RETRY_MS;
 let socket;
 
 function stateKey(state) {
   return `${state.deviceId}:${state.metric}`;
+}
+
+// Recency follows docs/protocol.md: the higher server-assigned boot generation
+// wins, and sequence breaks ties inside one boot. deviceTime is diagnostic only
+// and is never used to order state.
+function isNewer(candidate, existing) {
+  if (!existing) {
+    return true;
+  }
+  if (candidate.generation !== existing.generation) {
+    return candidate.generation > existing.generation;
+  }
+  return candidate.sequence > existing.sequence;
+}
+
+function applyState(state) {
+  const key = stateKey(state);
+  if (!isNewer(state, states.get(key))) {
+    return false;
+  }
+  states.set(key, state);
+  return true;
 }
 
 function escapeHtml(value) {
@@ -55,15 +80,24 @@ function setError(message) {
 }
 
 async function loadSnapshot() {
-  const response = await fetch('/api/devices');
+  const response = await fetch('/api/devices', { cache: 'no-store' });
   if (!response.ok) {
     throw new Error(`Snapshot request failed with ${response.status}.`);
   }
 
   const body = await response.json();
-  states.clear();
+
+  // The snapshot is authoritative, so entries it no longer lists are dropped.
+  // A message that arrived while the request was in flight can still be newer
+  // than the row it returned, so those are kept rather than overwritten.
+  const merged = new Map();
   for (const state of body.devices) {
-    states.set(stateKey(state), state);
+    const live = states.get(stateKey(state));
+    merged.set(stateKey(state), isNewer(state, live) ? state : live);
+  }
+  states.clear();
+  for (const [key, state] of merged) {
+    states.set(key, state);
   }
   render();
 }
@@ -76,15 +110,29 @@ function connect() {
     status.textContent = 'Realtime connected';
     status.className = 'status online';
     setError('');
+    retryDelay = INITIAL_RETRY_MS;
+
+    // Messages are not replayed, so anything published while the socket was
+    // down is missing. The snapshot is refetched after every successful
+    // connection, not only the first one, to restore authoritative state.
+    loadSnapshot().catch((error) => setError(error.message));
   });
 
   socket.addEventListener('message', (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type !== 'device.state.changed') {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
       return;
     }
-    states.set(stateKey(message.data), message.data);
-    render();
+    if (message?.type !== 'device.state.changed' || !message.data) {
+      return;
+    }
+    // A message can be older than the snapshot that raced it, so it is applied
+    // only when it is genuinely newer.
+    if (applyState(message.data)) {
+      render();
+    }
   });
 
   socket.addEventListener('error', () => {
@@ -94,13 +142,17 @@ function connect() {
   socket.addEventListener('close', () => {
     status.textContent = 'Realtime disconnected';
     status.className = 'status offline';
-    if (!stopped) {
-      retryTimer = window.setTimeout(connect, 1000);
+    if (stopped) {
+      return;
     }
+    // Back off so a server that drops this client as slow is not immediately
+    // hammered by it again.
+    window.clearTimeout(retryTimer);
+    retryTimer = window.setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   });
 }
 
-loadSnapshot().catch((error) => setError(error.message));
 connect();
 
 window.addEventListener('beforeunload', () => {
