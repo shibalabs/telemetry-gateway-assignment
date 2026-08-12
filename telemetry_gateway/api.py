@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -12,24 +13,39 @@ from fastapi.staticfiles import StaticFiles
 from telemetry_gateway.database import TelemetryRepository, TelemetryStore
 from telemetry_gateway.errors import UnknownBootError
 from telemetry_gateway.models import BootRegistrationInput, TelemetryInput
-from telemetry_gateway.realtime import RealtimeHub
+from telemetry_gateway.realtime import DEFAULT_CLIENT_QUEUE_LIMIT, RealtimeHub
 from telemetry_gateway.service import TelemetryService
 
 STATIC_DIR = Path(__file__).with_name("static")
+QUEUE_LIMIT_VARIABLE = "WS_CLIENT_QUEUE_LIMIT"
+
+
+def _configured_queue_limit() -> int:
+    """Per-client websocket buffer limit, overridable for local experiments."""
+    raw = os.environ.get(QUEUE_LIMIT_VARIABLE)
+    if not raw:
+        return DEFAULT_CLIENT_QUEUE_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CLIENT_QUEUE_LIMIT
+    return value if value >= 1 else DEFAULT_CLIENT_QUEUE_LIMIT
 
 
 def create_app(
     database_path: str = "data/telemetry.db",
     repository: TelemetryRepository | None = None,
     now: Callable[[], datetime] | None = None,
+    websocket_queue_limit: int | None = None,
 ) -> FastAPI:
     store = repository or TelemetryStore(database_path)
-    hub = RealtimeHub()
+    hub = RealtimeHub(queue_limit=websocket_queue_limit or _configured_queue_limit())
     service = TelemetryService(store, hub, now=now)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
+        await hub.shutdown()
         close = getattr(store, "close", None)
         if callable(close):
             close()
@@ -86,11 +102,14 @@ def create_app(
     async def websocket_endpoint(client: WebSocket) -> None:
         await hub.connect(client)
         try:
+            # The dashboard sends nothing; this loop only detects the close.
             while True:
                 await client.receive_text()
         except WebSocketDisconnect:
-            hub.disconnect(client)
+            pass
         except Exception:
-            hub.disconnect(client)
+            pass
+        finally:
+            await hub.disconnect(client)
 
     return app
