@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
-from telemetry_gateway.api import create_app
+from telemetry_gateway.api import QUEUE_LIMIT_VARIABLE, create_app
+from telemetry_gateway.realtime import DEFAULT_CLIENT_QUEUE_LIMIT
 
 
 def test_health_and_dashboard_are_local(tmp_path) -> None:
@@ -13,6 +15,33 @@ def test_health_and_dashboard_are_local(tmp_path) -> None:
         dashboard = client.get("/")
         assert dashboard.status_code == 200
         assert "Local Telemetry Dashboard" in dashboard.text
+
+
+def test_the_websocket_buffer_limit_is_configurable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(QUEUE_LIMIT_VARIABLE, "5")
+    app = create_app(str(tmp_path / "gateway.db"))
+
+    assert app.state.hub.queue_limit == 5
+
+
+@pytest.mark.parametrize("value", ["", "0", "-3", "not-a-number"])
+def test_an_unusable_buffer_limit_falls_back_to_the_default(
+    tmp_path, monkeypatch, value: str
+) -> None:
+    """A bad setting must not disable the protection or crash startup."""
+    monkeypatch.setenv(QUEUE_LIMIT_VARIABLE, value)
+    app = create_app(str(tmp_path / "gateway.db"))
+
+    assert app.state.hub.queue_limit == DEFAULT_CLIENT_QUEUE_LIMIT
+
+
+def test_an_explicit_buffer_limit_overrides_the_environment(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv(QUEUE_LIMIT_VARIABLE, "5")
+    app = create_app(str(tmp_path / "gateway.db"), websocket_queue_limit=12)
+
+    assert app.state.hub.queue_limit == 12
 
 
 def test_rejects_telemetry_for_an_unknown_boot(tmp_path) -> None:

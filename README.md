@@ -161,7 +161,12 @@ The equivalent cross-platform commands are:
 ```bash
 python -m compileall -q telemetry_gateway simulator.py tests
 python -m pytest
+node --test tests/dashboard.test.mjs
 ```
+
+The dashboard tests run the real `static/app.js` against a stubbed DOM on
+Node's built-in test runner. They need no packages, and `scripts/check.sh`
+skips them when Node is not on `PATH`.
 
 ### Local endpoints
 
@@ -169,3 +174,12 @@ python -m pytest
 - WebSocket: `ws://127.0.0.1:3000/ws`
 - Liveness: `http://127.0.0.1:3000/health/live`
 - Readiness: `http://127.0.0.1:3000/health/ready`
+
+### Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HOST` | `127.0.0.1` | Listen address. |
+| `PORT` | `3000` | Listen port. |
+| `DATA_FILE` | `data/telemetry.db` | SQLite database path. Migrated in place on start; never recreated. |
+| `WS_CLIENT_QUEUE_LIMIT` | `64` | Messages a single dashboard may fall behind before it is dropped. |
