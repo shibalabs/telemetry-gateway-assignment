@@ -28,7 +28,18 @@ class TelemetryService:
         return self._repository.register_boot(event)
 
     async def ingest(self, event: TelemetryInput) -> IngestResult:
+        """Persist an event, then announce it only if it changed the truth.
+
+        The database is the source of truth (docs/runtime-contract.md), so the
+        transaction completes first. A realtime message is published only after
+        a successful commit and only when authoritative current state actually
+        changed. A failed transaction, a duplicate, and a stale event therefore
+        all publish nothing.
+        """
         received_at = self._now().astimezone(timezone.utc).isoformat()
-        state = self._repository.preview_state(event, received_at)
-        await self._publisher.publish(state)
-        return self._repository.ingest(event, received_at)
+        result = self._repository.ingest(event, received_at)
+
+        if result.current_changed and result.state is not None:
+            await self._publisher.publish(result.state)
+
+        return result
