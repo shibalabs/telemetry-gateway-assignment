@@ -141,6 +141,48 @@ def test_a_rejected_event_leaves_no_trace_in_history(client) -> None:
     assert client.get("/api/devices").json()["devices"] == []
 
 
+def test_the_snapshot_holds_state_published_while_no_client_was_connected(
+    client,
+) -> None:
+    """Messages are not replayed, so /api/devices must carry the whole truth."""
+    register(client, "boot-a")
+    with client.websocket_connect("/ws"):
+        telemetry(client, sequence=1, value=21.4)
+
+    # Nothing is listening: these changes are announced to no one.
+    telemetry(client, sequence=2, value=22.9)
+    register(client, "boot-b")
+    telemetry(client, bootId="boot-b", sequence=1, value=30.5)
+
+    with client.websocket_connect("/ws"):
+        snapshot = client.get("/api/devices").json()["devices"]
+
+    assert len(snapshot) == 1
+    assert snapshot[0]["value"] == 30.5
+    assert snapshot[0]["bootId"] == "boot-b"
+    assert snapshot[0]["generation"] == 2
+    assert snapshot[0]["sequence"] == 1
+
+
+def test_the_snapshot_survives_a_restart_of_the_process(tmp_path) -> None:
+    """The local database is not reset on start, so state outlives the process."""
+    database = str(tmp_path / "gateway.db")
+    clock = lambda: datetime(2026, 8, 12, 9, 0, 1, tzinfo=timezone.utc)  # noqa: E731
+
+    with TestClient(create_app(database, now=clock)) as first:
+        register(first, "boot-a")
+        telemetry(first, sequence=4, value=23.5)
+
+    with TestClient(create_app(database, now=clock)) as second:
+        snapshot = second.get("/api/devices").json()["devices"]
+        history = second.get("/api/events").json()["events"]
+
+    assert len(snapshot) == 1
+    assert snapshot[0]["value"] == 23.5
+    assert snapshot[0]["sequence"] == 4
+    assert len(history) == 1
+
+
 def test_a_device_restart_is_announced_to_a_connected_dashboard(client) -> None:
     register(client, "boot-a")
     with client.websocket_connect("/ws") as socket:
